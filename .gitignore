@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pkl
+
+# Virtual environment
+ds_env/
+.venv/
+venv/
+env/
+
+# FAISS / Vector DB artifacts
+faiss_db/
+*.faiss
+*.index
+
+# Model cache
+.cache/
+huggingface/
+*.bin
+
+# Logs
+*.log
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# VSCode
+.vscode/
+
+# PyCharm
+.idea/
