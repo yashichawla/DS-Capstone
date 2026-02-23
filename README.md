@@ -107,3 +107,58 @@ Start by exploring the datasets using the provided notebooks:
    - Word frequency analysis
    - Condition extraction ("who is it good for", "who should avoid")
    - Skincare term/buzzword analysis
+  
+# 🔎 Vector Database & Streamlit App
+
+## Building the FAISS Vector Database
+
+Before running the app, generate the semantic vector store:
+
+```bash
+pip install -r requirements.txt
+pip install streamlit
+python src/build_vectordb.py
+```
+
+This creates a local `faiss_db/` directory containing the vector index used for semantic product retrieval.
+
+⚠️ Note: The `faiss_db/` folder is not committed to GitHub and must be generated locally.
+
+---
+
+## 🚀 Running the Streamlit Application
+
+Launch the interactive recommendation app:
+
+```bash
+streamlit run app/app.py
+```
+
+---
+
+## ✨ Streamlit Features
+
+The application supports:
+
+- Personalized skincare recommendations  
+- AM and/or PM routine generation  
+- Step-ordered routine:
+  - Cleanser → Toner → Treatment → Moisturizer → Sunscreen  
+- Budget filtering  
+- Skin-type compatibility filtering  
+- Optional product-type selection  
+- FAISS-based semantic similarity retrieval  
+- Fallback retrieval logic to ensure routine completeness  
+- Ingredient-level explainability (matched ingredients shown)  
+
+---
+
+# 🔒 Important
+
+Make sure the following entries exist in `.gitignore`:
+
+```text
+faiss_db/
+.venv/
+__pycache__/
+```
