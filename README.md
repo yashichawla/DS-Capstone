@@ -148,10 +148,31 @@ The application supports:
 - Skin-type compatibility filtering  
 - Optional product-type selection  
 - FAISS-based semantic similarity retrieval  
+- Multiple retrieval/RAG-style strategies
 - Fallback retrieval logic to ensure routine completeness  
 - Ingredient-level explainability (matched ingredients shown)  
 
 ---
+
+### Retrieval strategies (for comparison experiments)
+
+To make it easy to compare different retrieval formulations, the Streamlit sidebar exposes three strategies under **“Retrieval strategy”**:
+
+- **Baseline: main + fallback**  
+  - Builds one natural-language query from your skin type and concern (e.g., *“best skincare products for oily skin for acne”*).  
+  - Retrieves a candidate pool via FAISS, filters by budget and skin-type flags, then picks one product per routine step (cleanser, treatment, etc.).  
+  - For any missing steps, issues **step-specific fallback queries** (e.g., *“cleanser face wash for oily skin for acne”*) so the routine is as complete as possible.
+
+- **Step-wise only**  
+  - Skips the global query entirely and instead issues **independent queries per step** (cleanser, toner, treatment, moisturizer, sunscreen/mask).  
+  - Each query is tailored to the step plus your skin type and concern, which often improves coverage and diversity across steps.  
+  - Useful for analyzing how well the vector store supports fine-grained, step-level retrieval without relying on an overall “best products” query.
+
+- **Ingredient-boosted**  
+  - Starts from the same global query as the baseline but retrieves a slightly larger pool of candidates.  
+  - After budget and skin-type filtering, it **re-ranks results to favor products with richer ingredient matches** (based on the merged INCI metadata).  
+  - This lets you study whether explicitly rewarding ingredient coverage leads to more clinically-aligned or interpretable recommendations compared to pure semantic similarity.
+
 
 # 🔒 Important
 
