@@ -1,9 +1,11 @@
 from pathlib import Path
-
+from dotenv import load_dotenv
+from llm_summary import generate_product_explanation
 import streamlit as st
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
+load_dotenv()
 
 st.set_page_config(page_title="Skincare Recommender", layout="wide")
 st.title("✨ Personalized Skincare Routine Recommender")
@@ -133,7 +135,29 @@ def rerank_by_ingredient_boost(results, alpha: float = 0.1):
     scored.sort(key=lambda x: x[1])
     return scored
 
-def product_card(doc, score):
+@st.cache_data(show_spinner=False)
+def cached_llm_explanation(
+    skin_type,
+    concern,
+    product_name,
+    product_type,
+    step,
+    price,
+    matched_ingredients_tuple,
+    excerpt, 
+):
+    return generate_product_explanation(
+        skin_type=skin_type,
+        concern=concern,
+        product_name=product_name,
+        product_type=product_type,
+        step=step,
+        price="",
+        matched_ingredients=list(matched_ingredients_tuple),
+        excerpt="",
+    )
+
+def product_card(doc, score, skin_type=None, concern=None, step=None):
     md = doc.metadata
     st.subheader(md.get("name", "Unknown product"))
 
@@ -143,11 +167,26 @@ def product_card(doc, score):
     cols[2].write(f"**Price:** ${md.get('price_usd', 'N/A')}")
     cols[3].write(f"**Score:** {score:.4f}")
 
-    matched = md.get("matched_ingredients", [])
-    if matched:
-        st.write("**Why this matches:**", ", ".join(matched[:12]) + (" ..." if len(matched) > 12 else ""))
-    else:
-        st.write("**Why this matches:** Semantic match to your query.")
+    matched = md.get("matched_ingredients", []) or []
+
+    try:
+        explanation = cached_llm_explanation(
+            skin_type=skin_type,
+            concern=concern or "",
+            product_name=md.get("name", ""),
+            product_type=md.get("product_type", ""),
+            step=step,
+            price=md.get("price_usd", "N/A"),
+            matched_ingredients_tuple=tuple(matched[:12]),
+            excerpt=doc.page_content[:500],
+        )
+        st.write(f"**Why this matches:** {explanation}")
+    except Exception as e:
+        if matched:
+            st.write("**Why this matches:**", ", ".join(matched[:12]) + (" ..." if len(matched) > 12 else ""))
+        else:
+            st.write("**Why this matches:** Semantic match to your query.")
+        st.caption(f"LLM explanation unavailable, showing fallback instead. Error: {e}")
 
     with st.expander("Show product text (doc excerpt)"):
         st.write(doc.page_content[:1200] + ("..." if len(doc.page_content) > 1200 else ""))
@@ -228,7 +267,7 @@ STEP_LABEL = {
     "mask": "Mask",
 }
 
-def render_routine(step_order, picks):
+def render_routine(step_order, picks, skin_type=None, concern=None):
     """
     Render routine in proper step order with numbered steps.
     """
@@ -244,7 +283,7 @@ def render_routine(step_order, picks):
             continue
         doc, score = by_bucket[bucket]
         st.markdown(f"### Step {step_num}: {STEP_LABEL.get(bucket, bucket.title())}")
-        product_card(doc, score)
+        product_card(doc, score, skin_type=skin_type, concern=concern, step=bucket)
         step_num += 1
 
 
@@ -294,7 +333,7 @@ if st.button("Generate Recommendations"):
             if not am_picks:
                 st.write("No AM products found. Try increasing budget or increasing K.")
             else:
-                render_routine(am_steps, am_picks)
+                render_routine(am_steps, am_picks, skin_type=skin_type, concern=concern)
 
             if show_debug:
                 with st.expander("Fallback debug (AM)"):
@@ -309,7 +348,7 @@ if st.button("Generate Recommendations"):
             if not pm_picks:
                 st.write("No PM products found. Try increasing budget or increasing K.")
             else:
-                render_routine(pm_steps, pm_picks)
+                render_routine(pm_steps, pm_picks, skin_type=skin_type, concern=concern)
 
             if show_debug:
                 with st.expander("Fallback debug (PM)"):
@@ -325,7 +364,7 @@ if st.button("Generate Recommendations"):
             if not am_picks:
                 st.write("No AM products found. Try increasing budget or increasing K.")
             else:
-                render_routine(am_steps, am_picks)
+                render_routine(am_steps, am_picks, skin_type=skin_type, concern=concern)
 
             if show_debug:
                 with st.expander("Fallback debug (AM)"):
@@ -340,7 +379,7 @@ if st.button("Generate Recommendations"):
             if not pm_picks:
                 st.write("No PM products found. Try increasing budget or increasing K.")
             else:
-                render_routine(pm_steps, pm_picks)
+                render_routine(pm_steps, pm_picks, skin_type=skin_type, concern=concern)
 
             if show_debug:
                 with st.expander("Fallback debug (PM)"):
