@@ -1,11 +1,14 @@
 # Import required libraries
 from pathlib import Path
+from dotenv import load_dotenv
+from llm_summary import generate_product_explanation
 import streamlit as st
 
 # LangChain tools for vector search
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
+load_dotenv()
 
 # Configure Streamlit page settings
 st.set_page_config(page_title="Skincare Recommender", layout="wide")
@@ -166,6 +169,29 @@ def rerank_by_ingredient_boost(results, alpha: float = 0.1):
 
     return scored
 
+@st.cache_data(show_spinner=False)
+def cached_llm_explanation(
+    skin_type,
+    concern,
+    product_name,
+    product_type,
+    step,
+    price,
+    matched_ingredients_tuple,
+    excerpt, 
+):
+    return generate_product_explanation(
+        skin_type=skin_type,
+        concern=concern,
+        product_name=product_name,
+        product_type=product_type,
+        step=step,
+        price="",
+        matched_ingredients=list(matched_ingredients_tuple),
+        excerpt="",
+    )
+
+def product_card(doc, score, skin_type=None, concern=None, step=None):
 
 # Display product details in UI
 def product_card(doc, score):
@@ -181,6 +207,26 @@ def product_card(doc, score):
     cols[2].write(f"**Price:** ${md.get('price_usd', 'N/A')}")
     cols[3].write(f"**Score:** {score:.4f}")
 
+    matched = md.get("matched_ingredients", []) or []
+
+    try:
+        explanation = cached_llm_explanation(
+            skin_type=skin_type,
+            concern=concern or "",
+            product_name=md.get("name", ""),
+            product_type=md.get("product_type", ""),
+            step=step,
+            price=md.get("price_usd", "N/A"),
+            matched_ingredients_tuple=tuple(matched[:12]),
+            excerpt=doc.page_content[:500],
+        )
+        st.write(f"**Why this matches:** {explanation}")
+    except Exception as e:
+        if matched:
+            st.write("**Why this matches:**", ", ".join(matched[:12]) + (" ..." if len(matched) > 12 else ""))
+        else:
+            st.write("**Why this matches:** Semantic match to your query.")
+        st.caption(f"LLM explanation unavailable, showing fallback instead. Error: {e}")
     # Show ingredient explanation
     matched = md.get("matched_ingredients", [])
 
@@ -304,6 +350,10 @@ STEP_LABEL = {
     "mask": "Mask",
 }
 
+def render_routine(step_order, picks, skin_type=None, concern=None):
+    """
+    Render routine in proper step order with numbered steps.
+    """
 
 # Render routine in UI with numbered steps
 def render_routine(step_order, picks):
@@ -324,9 +374,110 @@ def render_routine(step_order, picks):
             continue
 
         doc, score = by_bucket[bucket]
+        st.markdown(f"### Step {step_num}: {STEP_LABEL.get(bucket, bucket.title())}")
+        product_card(doc, score, skin_type=skin_type, concern=concern, step=bucket)
+        step_num += 1
 
         st.markdown(f"### Step {step_num}: {STEP_LABEL.get(bucket, bucket.title())}")
 
+if st.button("Generate Recommendations"):
+    main_query = build_query(skin_type, concern)
+    st.write(f"**Main query (for applicable strategies):** {main_query}")
+
+    if retrieval_mode == "Baseline: main + fallback":
+        raw = db.similarity_search_with_score(main_query, k=k)
+        filtered = filter_results(raw, skin_type, budget)
+    elif retrieval_mode == "Step-wise only":
+        raw = []
+        filtered = []
+    else:  # Ingredient-boosted
+        raw = db.similarity_search_with_score(main_query, k=max(k, 40))
+        base_filtered = filter_results(raw, skin_type, budget)
+        filtered = rerank_by_ingredient_boost(base_filtered)
+
+    if show_debug:
+        st.markdown("### Debug: Main Retrieval (top 10)")
+        st.write(f"Strategy: {retrieval_mode}")
+        st.write(f"Raw retrieved: {len(raw)} | After filters: {len(filtered)}")
+        for d, s in raw[:10]:
+            st.write(f"- {d.metadata.get('name')} | {d.metadata.get('product_type')} | ${d.metadata.get('price_usd')} | score={s:.4f}")
+
+    show_am = routine_choice in ["Both", "AM only"]
+    show_pm = routine_choice in ["Both", "PM only"]
+
+    am_steps = am_bucket_order()
+    pm_steps = pm_bucket_order()
+
+    if show_am and len(am_steps) == 0:
+        st.warning("Select at least one AM step in the sidebar (e.g., Cleanser / Moisturizer / Sunscreen).")
+        st.stop()
+    if show_pm and len(pm_steps) == 0:
+        st.warning("Select at least one PM step in the sidebar (e.g., Cleanser / Treatment / Moisturizer).")
+        st.stop()
+
+    if show_am and show_pm:
+        col_am, col_pm = st.columns(2)
+
+        with col_am:
+            st.markdown("## 🌞 AM Routine")
+            am_picks, am_debug = build_routine_with_fallback(
+                db, filtered, am_steps, skin_type, concern, budget, fallback_k
+            )
+            if not am_picks:
+                st.write("No AM products found. Try increasing budget or increasing K.")
+            else:
+                render_routine(am_steps, am_picks, skin_type=skin_type, concern=concern)
+
+            if show_debug:
+                with st.expander("Fallback debug (AM)"):
+                    for bucket, q, n_raw, n_filt, picked in am_debug:
+                        st.write(f"- **{bucket}** | q='{q}' | raw={n_raw} filt={n_filt} picked={picked}")
+
+        with col_pm:
+            st.markdown("## 🌙 PM Routine")
+            pm_picks, pm_debug = build_routine_with_fallback(
+                db, filtered, pm_steps, skin_type, concern, budget, fallback_k
+            )
+            if not pm_picks:
+                st.write("No PM products found. Try increasing budget or increasing K.")
+            else:
+                render_routine(pm_steps, pm_picks, skin_type=skin_type, concern=concern)
+
+            if show_debug:
+                with st.expander("Fallback debug (PM)"):
+                    for bucket, q, n_raw, n_filt, picked in pm_debug:
+                        st.write(f"- **{bucket}** | q='{q}' | raw={n_raw} filt={n_filt} picked={picked}")
+
+    else:
+        if show_am:
+            st.markdown("## 🌞 AM Routine")
+            am_picks, am_debug = build_routine_with_fallback(
+                db, filtered, am_steps, skin_type, concern, budget, fallback_k
+            )
+            if not am_picks:
+                st.write("No AM products found. Try increasing budget or increasing K.")
+            else:
+                render_routine(am_steps, am_picks, skin_type=skin_type, concern=concern)
+
+            if show_debug:
+                with st.expander("Fallback debug (AM)"):
+                    for bucket, q, n_raw, n_filt, picked in am_debug:
+                        st.write(f"- **{bucket}** | q='{q}' | raw={n_raw} filt={n_filt} picked={picked}")
+
+        if show_pm:
+            st.markdown("## 🌙 PM Routine")
+            pm_picks, pm_debug = build_routine_with_fallback(
+                db, filtered, pm_steps, skin_type, concern, budget, fallback_k
+            )
+            if not pm_picks:
+                st.write("No PM products found. Try increasing budget or increasing K.")
+            else:
+                render_routine(pm_steps, pm_picks, skin_type=skin_type, concern=concern)
+
+            if show_debug:
+                with st.expander("Fallback debug (PM)"):
+                    for bucket, q, n_raw, n_filt, picked in pm_debug:
+                        st.write(f"- **{bucket}** | q='{q}' | raw={n_raw} filt={n_filt} picked={picked}")
         product_card(doc, score)
 
         step_num += 1
