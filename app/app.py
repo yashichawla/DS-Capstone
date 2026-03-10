@@ -192,9 +192,7 @@ def cached_llm_explanation(
     )
 
 def product_card(doc, score, skin_type=None, concern=None, step=None):
-
 # Display product details in UI
-def product_card(doc, score):
 
     md = doc.metadata
 
@@ -351,12 +349,6 @@ STEP_LABEL = {
 }
 
 def render_routine(step_order, picks, skin_type=None, concern=None):
-    """
-    Render routine in proper step order with numbered steps.
-    """
-
-# Render routine in UI with numbered steps
-def render_routine(step_order, picks):
 
     by_bucket = {}
 
