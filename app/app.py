@@ -1,6 +1,6 @@
-import streamlit as st
 from pathlib import Path
 
+import streamlit as st
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
@@ -11,15 +11,15 @@ st.title("✨ Personalized Skincare Routine Recommender")
 
 @st.cache_resource
 def load_db():
-    repo_root = Path(__file__).resolve().parents[1]  # app/ -> root
+    repo_root = Path(__file__).resolve().parents[1]  
     save_dir = repo_root / "faiss_db"
 
     emb = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     db = FAISS.load_local(str(save_dir), emb, allow_dangerous_deserialization=True)
     return db
 
-db = load_db()
 
+db = load_db()
 
 
 st.sidebar.header("Your Preferences")
@@ -34,6 +34,16 @@ budget = st.sidebar.slider("Max Budget ($)", 5, 200, 50)
 concern = st.sidebar.text_input(
     "Main Concern (optional)",
     placeholder="acne, hyperpigmentation, dryness..."
+)
+
+retrieval_mode = st.sidebar.selectbox(
+    "Retrieval strategy",
+    [
+        "Baseline: main + fallback",
+        "Step-wise only",
+        "Ingredient-boosted",
+    ],
+    index=0,
 )
 
 k = st.sidebar.slider("Initial retrieval K", 5, 50, 20)
@@ -106,6 +116,22 @@ def filter_results(results, skin: str, max_budget: float):
 
         out.append((doc, score))
     return out
+
+
+def rerank_by_ingredient_boost(results, alpha: float = 0.1):
+    """
+    Simple re-ranking that slightly favors products with richer ingredient matches.
+    FAISS scores here are distances (lower is better), so we subtract a small
+    factor proportional to matched ingredient count.
+    """
+    scored = []
+    for doc, score in results:
+        matched = doc.metadata.get("matched_ingredients", []) or []
+        bonus = alpha * min(len(matched), 20)
+        new_score = score - bonus
+        scored.append((doc, new_score))
+    scored.sort(key=lambda x: x[1])
+    return scored
 
 def product_card(doc, score):
     md = doc.metadata
@@ -221,15 +247,25 @@ def render_routine(step_order, picks):
         product_card(doc, score)
         step_num += 1
 
+
 if st.button("Generate Recommendations"):
     main_query = build_query(skin_type, concern)
-    st.write(f"**Main query:** {main_query}")
+    st.write(f"**Main query (for applicable strategies):** {main_query}")
 
-    raw = db.similarity_search_with_score(main_query, k=k)
-    filtered = filter_results(raw, skin_type, budget)
+    if retrieval_mode == "Baseline: main + fallback":
+        raw = db.similarity_search_with_score(main_query, k=k)
+        filtered = filter_results(raw, skin_type, budget)
+    elif retrieval_mode == "Step-wise only":
+        raw = []
+        filtered = []
+    else:  # Ingredient-boosted
+        raw = db.similarity_search_with_score(main_query, k=max(k, 40))
+        base_filtered = filter_results(raw, skin_type, budget)
+        filtered = rerank_by_ingredient_boost(base_filtered)
 
     if show_debug:
         st.markdown("### Debug: Main Retrieval (top 10)")
+        st.write(f"Strategy: {retrieval_mode}")
         st.write(f"Raw retrieved: {len(raw)} | After filters: {len(filtered)}")
         for d, s in raw[:10]:
             st.write(f"- {d.metadata.get('name')} | {d.metadata.get('product_type')} | ${d.metadata.get('price_usd')} | score={s:.4f}")
