@@ -8,12 +8,13 @@ Your job is to explain why a retrieved skincare product may fit a user's skin ty
 
 Rules:
 - Use only the provided product information.
-- Do not say "based on the provided information.
+- Do not say "based on the provided information."
 - Do not invent ingredients, benefits, claims, or medical advice.
 - Do not mention any ingredient that is not listed.
 - Use cautious wording such as "may help", "can support", or "is often used for".
 - Keep the explanation to 2 concise sentences max.
 - If the information is limited, say so briefly.
+- If an age group is provided, tailor the explanation to their likely concerns (e.g., acne for teens, anti-aging for 40s+).
 """.strip()
 
 
@@ -32,6 +33,7 @@ def generate_product_explanation(
     *,
     skin_type: str,
     concern: str,
+    age_group: str,
     product_name: str,
     product_type: str,
     step: str,
@@ -50,6 +52,7 @@ def generate_product_explanation(
 User profile:
 - Skin type: {skin_type}
 - Main concern: {concern_text}
+- Age group: {age_group}
 
 Routine step: {step}
 
@@ -61,7 +64,7 @@ Product:
 - Product excerpt: {excerpt_text}
 
 Task:
-Write a short explanation of why this product may suit the user's skin type and concern.
+Write a short explanation of why this product may suit the user's skin type, concern, and age group.
 Focus on the product's role and the listed ingredients only.
 """.strip()
 
