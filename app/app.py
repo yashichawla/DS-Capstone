@@ -3,6 +3,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from llm_summary import generate_product_explanation
 import streamlit as st
+import time # Import time for simulating loading
 
 # LangChain tools for vector search
 from langchain_community.vectorstores import FAISS
@@ -21,7 +22,7 @@ st.title("✨ Personalized Skincare Routine Recommender")
 @st.cache_resource
 def load_db():
     # Find project root folder
-    repo_root = Path(__file__).resolve().parents[1]  
+    repo_root = Path(__file__).resolve().parents[1]
     save_dir = repo_root / "faiss_db"
 
     # Load embedding model used during indexing
@@ -39,6 +40,13 @@ db = load_db()
 
 # Sidebar UI for collecting user preferences
 st.sidebar.header("Your Preferences")
+
+# Age group selection
+age_group = st.sidebar.selectbox(
+    "Your Age Group",
+    ["Teens / 20s", "30s", "40s", "50s+", "Not specified"],
+    index=4
+)
 
 # Skin type selection
 skin_type = st.sidebar.selectbox(
@@ -87,7 +95,13 @@ routine_choice = st.sidebar.radio(
     index=0
 )
 
-# Choose which steps to include
+st.sidebar.divider()
+st.sidebar.subheader("Clean Beauty Filters")
+include_fragrance_free = st.sidebar.checkbox("Fragrance-Free", value=False)
+include_sulfate_paraben_free = st.sidebar.checkbox("Sulfate/Paraben-Free", value=False)
+include_non_comedogenic = st.sidebar.checkbox("Non-Comedogenic", value=False)
+
+st.sidebar.divider()
 st.sidebar.caption("Choose which steps to include:")
 
 include_cleanser = st.sidebar.checkbox("Cleanser", value=True)
@@ -99,10 +113,20 @@ include_mask = st.sidebar.checkbox("Mask (PM)", value=False)
 
 
 # Build semantic search query based on user input
-def build_query(skin: str, concern_text: str) -> str:
+def build_query(skin: str, concern_text: str, age: str) -> str:
     q = f"best skincare products for {skin.lower()} skin"
     if concern_text.strip():
         q += f" for {concern_text.strip().lower()}"
+
+    # Add age-specific keywords
+    if age == "Teens / 20s":
+        q += " for acne prone or oily skin"
+    elif age == "30s":
+        q += " for early signs of aging or sun damage"
+    elif age == "40s":
+        q += " for collagen loss or elasticity concerns"
+    elif age == "50s+":
+        q += " for hormonal dryness or thin skin"
     return q
 
 
@@ -127,7 +151,7 @@ def normalize_type(ptype: str) -> str:
 
 
 # Filter retrieved products by budget and skin compatibility
-def filter_results(results, skin: str, max_budget: float):
+def filter_results(results, skin: str, max_budget: float, fragrance_free: bool = False, sulfate_free: bool = False, non_comedogenic: bool = False):
 
     out = []
     for doc, score in results:
@@ -142,6 +166,18 @@ def filter_results(results, skin: str, max_budget: float):
         skin_flags = md.get("skin_flags", {})
         flag = skin_flags.get(skin, None)
         if flag is not None and flag != 1:
+            continue
+
+        # Clean Beauty Filtering
+        ingredients_text = md.get("ingredients", "").lower()
+        
+        if fragrance_free and any(f in ingredients_text for f in ["fragrance", "parfum", "linalool", "limonene"]):
+            continue
+            
+        if sulfate_free and any(s in ingredients_text for s in ["sulfate", "paraben", "sls", "sles"]):
+            continue
+            
+        if non_comedogenic and any(c in ingredients_text for c in ["coconut oil", "isopropyl myristate", "cocoa butter"]):
             continue
 
         out.append((doc, score))
@@ -169,10 +205,23 @@ def rerank_by_ingredient_boost(results, alpha: float = 0.1):
 
     return scored
 
+
+# Human-readable labels for routine buckets (used in UI + LLM step text)
+STEP_LABEL = {
+    "cleanser": "Cleanser",
+    "toner": "Toner",
+    "treatment": "Treatment / Serum",
+    "moisturizer": "Moisturizer",
+    "sunscreen": "Sunscreen",
+    "mask": "Mask",
+}
+
+
 @st.cache_data(show_spinner=False)
 def cached_llm_explanation(
     skin_type,
     concern,
+    age_group,
     product_name,
     product_type,
     step,
@@ -183,6 +232,7 @@ def cached_llm_explanation(
     return generate_product_explanation(
         skin_type=skin_type,
         concern=concern,
+        age_group=age_group,
         product_name=product_name,
         product_type=product_type,
         step=step,
@@ -191,9 +241,16 @@ def cached_llm_explanation(
         excerpt="",
     )
 
-def product_card(doc, score, skin_type=None, concern=None, step=None):
-# Display product details in UI
-
+def product_card(
+    doc,
+    score,
+    skin_type=None,
+    concern=None,
+    routine_phase=None,
+    bucket=None,
+    age_group=None,
+):
+    """routine_phase is 'AM' or 'PM'; bucket is e.g. cleanser, sunscreen (for LLM context)."""
     md = doc.metadata
 
     st.subheader(md.get("name", "Unknown product"))
@@ -207,13 +264,19 @@ def product_card(doc, score, skin_type=None, concern=None, step=None):
 
     matched = md.get("matched_ingredients", []) or []
 
+    if routine_phase and bucket:
+        llm_step = f"{routine_phase} routine – {STEP_LABEL.get(bucket, bucket.title())}"
+    else:
+        llm_step = bucket or routine_phase or ""
+
     try:
         explanation = cached_llm_explanation(
             skin_type=skin_type,
             concern=concern or "",
+            age_group=age_group,
             product_name=md.get("name", ""),
             product_type=md.get("product_type", ""),
-            step=step,
+            step=llm_step,
             price=md.get("price_usd", "N/A"),
             matched_ingredients_tuple=tuple(matched[:12]),
             excerpt=doc.page_content[:500],
@@ -225,13 +288,18 @@ def product_card(doc, score, skin_type=None, concern=None, step=None):
         else:
             st.write("**Why this matches:** Semantic match to your query.")
         st.caption(f"LLM explanation unavailable, showing fallback instead. Error: {e}")
-    # Show ingredient explanation
-    matched = md.get("matched_ingredients", [])
+
+    # Usage tips: need routine_phase AM/PM (not product bucket — that was the previous bug)
+    product_type_normalized = normalize_type(md.get("product_type", ""))
+    if routine_phase == "AM" and product_type_normalized == "sunscreen":
+        st.info("☀️ **Usage Tip (AM):** Remember to reapply sunscreen every 2 hours, especially if outdoors or sweating!")
+    elif routine_phase == "PM" and product_type_normalized == "treatment" and any(ing.lower() == "retinol" for ing in matched):
+        st.info("🌙 **Usage Tip (PM):** If this treatment contains retinol, use it at night and always follow with SPF in the morning.")
+    elif routine_phase == "PM" and product_type_normalized == "mask":
+        st.info("🌙 **Usage Tip (PM):** Masks are great for targeted concerns. Follow product instructions for frequency and duration.")
 
     if matched:
-        st.write("**Why this matches:**", ", ".join(matched[:12]) + (" ..." if len(matched) > 12 else ""))
-    else:
-        st.write("**Why this matches:** Semantic match to your query.")
+        st.write("**Matched ingredients:** " + ", ".join(matched))
 
     # Expandable section for document text
     with st.expander("Show product text (doc excerpt)"):
@@ -298,7 +366,7 @@ def build_routine_with_fallback(db, base_filtered, step_order, skin_type, concer
 
         step_raw, q = retrieve_for_bucket(db, bucket, skin_type, concern, k=fallback_k)
 
-        step_filtered = filter_results(step_raw, skin_type, budget)
+        step_filtered = filter_results(step_raw, skin_type, budget, include_fragrance_free, include_sulfate_paraben_free, include_non_comedogenic)
 
         step_pick = pick_first_per_bucket(step_filtered, [bucket])
 
@@ -338,138 +406,88 @@ def pm_bucket_order():
     return order
 
 
-# Human readable labels for each routine step
-STEP_LABEL = {
-    "cleanser": "Cleanser",
-    "toner": "Toner",
-    "treatment": "Treatment / Serum",
-    "moisturizer": "Moisturizer",
-    "sunscreen": "Sunscreen",
-    "mask": "Mask",
-}
-
-def render_routine(step_order, picks, skin_type=None, concern=None):
+def render_routine(step_order, picks, skin_type=None, concern=None, age_group=None, routine_phase=None):
 
     by_bucket = {}
 
     for doc, score in picks:
         b = normalize_type(doc.metadata.get("product_type", ""))
-
-        if b not in by_bucket:
+        if b in step_order and b not in by_bucket:
             by_bucket[b] = (doc, score)
 
-    step_num = 1
-
-    for bucket in step_order:
-
-        if bucket not in by_bucket:
-            continue
-
-        doc, score = by_bucket[bucket]
+    for step_num, bucket in enumerate(step_order, 1):
         st.markdown(f"### Step {step_num}: {STEP_LABEL.get(bucket, bucket.title())}")
-        product_card(doc, score, skin_type=skin_type, concern=concern, step=bucket)
-        step_num += 1
+        if bucket in by_bucket:
+            doc, score = by_bucket[bucket]
+            product_card(
+                doc,
+                score,
+                skin_type,
+                concern,
+                routine_phase,
+                bucket,
+                age_group,
+            )
+        else:
+            st.write("No product found for this step.")
 
-        st.markdown(f"### Step {step_num}: {STEP_LABEL.get(bucket, bucket.title())}")
 
+# Main execution block
 if st.button("Generate Recommendations"):
-    main_query = build_query(skin_type, concern)
-    st.write(f"**Main query (for applicable strategies):** {main_query}")
+    with st.spinner("Curating your personalized routine..."):
+        time.sleep(1) # Simulate some processing time
+        main_query = build_query(skin_type, concern, age_group)
+        st.write(f"**Main query (for applicable strategies):** {main_query}")
 
-    if retrieval_mode == "Baseline: main + fallback":
-        raw = db.similarity_search_with_score(main_query, k=k)
-        filtered = filter_results(raw, skin_type, budget)
-    elif retrieval_mode == "Step-wise only":
-        raw = []
-        filtered = []
-    else:  # Ingredient-boosted
-        raw = db.similarity_search_with_score(main_query, k=max(k, 40))
-        base_filtered = filter_results(raw, skin_type, budget)
-        filtered = rerank_by_ingredient_boost(base_filtered)
+        if retrieval_mode == "Baseline: main + fallback":
+            raw = db.similarity_search_with_score(main_query, k=k)
+            filtered_results = filter_results(raw, skin_type, budget, include_fragrance_free, include_sulfate_paraben_free, include_non_comedogenic)
+        elif retrieval_mode == "Step-wise only":
+            raw = []
+            filtered_results = []
+        else:  # Ingredient-boosted
+            raw = db.similarity_search_with_score(main_query, k=max(k, 40))
+            filtered_results = filter_results(raw, skin_type, budget, include_fragrance_free, include_sulfate_paraben_free, include_non_comedogenic)
+            filtered_results = rerank_by_ingredient_boost(filtered_results)
 
-    if show_debug:
-        st.markdown("### Debug: Main Retrieval (top 10)")
-        st.write(f"Strategy: {retrieval_mode}")
-        st.write(f"Raw retrieved: {len(raw)} | After filters: {len(filtered)}")
-        for d, s in raw[:10]:
-            st.write(f"- {d.metadata.get('name')} | {d.metadata.get('product_type')} | ${d.metadata.get('price_usd')} | score={s:.4f}")
+        if show_debug:
+            with st.expander("Raw Retrieved Documents"):
+                st.write(raw)
 
-    show_am = routine_choice in ["Both", "AM only"]
-    show_pm = routine_choice in ["Both", "PM only"]
+        am_picks, am_debug = build_routine_with_fallback(db, filtered_results, am_bucket_order(), skin_type, concern, budget, fallback_k)
+        pm_picks, pm_debug = build_routine_with_fallback(db, filtered_results, pm_bucket_order(), skin_type, concern, budget, fallback_k)
 
-    am_steps = am_bucket_order()
-    pm_steps = pm_bucket_order()
+    if routine_choice in ["Both", "AM only"]:
+        st.header("☀️ AM Routine")
+        if not am_picks:
+            st.write("No AM products found. Try increasing budget or increasing K.")
+        else:
+            render_routine(am_bucket_order(), am_picks, skin_type, concern, age_group, routine_phase="AM")
 
-    if show_am and len(am_steps) == 0:
-        st.warning("Select at least one AM step in the sidebar (e.g., Cleanser / Moisturizer / Sunscreen).")
-        st.stop()
-    if show_pm and len(pm_steps) == 0:
-        st.warning("Select at least one PM step in the sidebar (e.g., Cleanser / Treatment / Moisturizer).")
-        st.stop()
+        if show_debug:
+            with st.expander("Fallback debug (AM)"):
+                for bucket, q, n_raw, n_filt, picked in am_debug:
+                    st.write(f"**{bucket}**: {q} -> {n_raw} raw -> {n_filt} filtered -> Picked: {picked}")
 
-    if show_am and show_pm:
-        col_am, col_pm = st.columns(2)
+    if routine_choice in ["Both", "PM only"]:
+        st.header("🌙 PM Routine")
+        if not pm_picks:
+            st.write("No PM products found. Try increasing budget or increasing K.")
+        else:
+            render_routine(pm_bucket_order(), pm_picks, skin_type, concern, age_group, routine_phase="PM")
 
-        with col_am:
-            st.markdown("## 🌞 AM Routine")
-            am_picks, am_debug = build_routine_with_fallback(
-                db, filtered, am_steps, skin_type, concern, budget, fallback_k
-            )
-            if not am_picks:
-                st.write("No AM products found. Try increasing budget or increasing K.")
-            else:
-                render_routine(am_steps, am_picks, skin_type=skin_type, concern=concern)
+        if show_debug:
+            with st.expander("Fallback debug (PM)"):
+                for bucket, q, n_raw, n_filt, picked in pm_debug:
+                    st.write(f"**{bucket}**: {q} -> {n_raw} raw -> {n_filt} filtered -> Picked: {picked}")
 
-            if show_debug:
-                with st.expander("Fallback debug (AM)"):
-                    for bucket, q, n_raw, n_filt, picked in am_debug:
-                        st.write(f"- **{bucket}** | q='{q}' | raw={n_raw} filt={n_filt} picked={picked}")
-
-        with col_pm:
-            st.markdown("## 🌙 PM Routine")
-            pm_picks, pm_debug = build_routine_with_fallback(
-                db, filtered, pm_steps, skin_type, concern, budget, fallback_k
-            )
-            if not pm_picks:
-                st.write("No PM products found. Try increasing budget or increasing K.")
-            else:
-                render_routine(pm_steps, pm_picks, skin_type=skin_type, concern=concern)
-
-            if show_debug:
-                with st.expander("Fallback debug (PM)"):
-                    for bucket, q, n_raw, n_filt, picked in pm_debug:
-                        st.write(f"- **{bucket}** | q='{q}' | raw={n_raw} filt={n_filt} picked={picked}")
-
-    else:
-        if show_am:
-            st.markdown("## 🌞 AM Routine")
-            am_picks, am_debug = build_routine_with_fallback(
-                db, filtered, am_steps, skin_type, concern, budget, fallback_k
-            )
-            if not am_picks:
-                st.write("No AM products found. Try increasing budget or increasing K.")
-            else:
-                render_routine(am_steps, am_picks, skin_type=skin_type, concern=concern)
-
-            if show_debug:
-                with st.expander("Fallback debug (AM)"):
-                    for bucket, q, n_raw, n_filt, picked in am_debug:
-                        st.write(f"- **{bucket}** | q='{q}' | raw={n_raw} filt={n_filt} picked={picked}")
-
-        if show_pm:
-            st.markdown("## 🌙 PM Routine")
-            pm_picks, pm_debug = build_routine_with_fallback(
-                db, filtered, pm_steps, skin_type, concern, budget, fallback_k
-            )
-            if not pm_picks:
-                st.write("No PM products found. Try increasing budget or increasing K.")
-            else:
-                render_routine(pm_steps, pm_picks, skin_type=skin_type, concern=concern)
-
-            if show_debug:
-                with st.expander("Fallback debug (PM)"):
-                    for bucket, q, n_raw, n_filt, picked in pm_debug:
-                        st.write(f"- **{bucket}** | q='{q}' | raw={n_raw} filt={n_filt} picked={picked}")
-        product_card(doc, score)
-
-        step_num += 1
+# Ingredient Glossary (at the bottom of the sidebar or main page)
+st.sidebar.divider()
+st.sidebar.subheader("Ingredient Glossary")
+with st.sidebar.expander("Common Skincare Ingredients"):
+    st.markdown("**Niacinamide:** A form of Vitamin B3 that helps reduce inflammation, minimize pores, and improve skin tone.")
+    st.markdown("**Hyaluronic Acid:** A powerful humectant that attracts and holds moisture, providing intense hydration to the skin.")
+    st.markdown("**Retinol:** A derivative of Vitamin A, known for its anti-aging properties, promoting cell turnover and reducing fine lines.")
+    st.markdown("**Vitamin C:** A potent antioxidant that brightens skin, reduces hyperpigmentation, and protects against environmental damage.")
+    st.markdown("**Salicylic Acid:** A beta-hydroxy acid (BHA) that exfoliates inside the pore, effective for acne and oily skin.")
+    st.markdown("**Glycolic Acid:** An alpha-hydroxy acid (AHA) that exfoliates the skin's surface, improving texture and brightness.")
